@@ -1,32 +1,26 @@
-# Objectid-vc-cli
+# iota-vc-cli
 
-TypeScript (Node.js) CLI that generates a **Verifiable Credential** for a file by embedding its **SHA-256 hash**, and signs it with **EdDSA (Ed25519)** using **IOTA Identity**.
+TypeScript (Node.js) CLI that generates a **Verifiable Credential (VC-JWT)** for a file by embedding its **SHA-256 hash**, and signs it with **EdDSA (Ed25519)** using **IOTA Identity WASM**.
 
-What it does:
+This version is designed to work **offline** as long as you provide the **DID Document JSON** of the issuer:
 
-- reads an input file (`--file`)
-- takes a seed (`--seed`)
-- deterministically derives an Ed25519 keypair
-- builds an **offline DID** (`did:jwk`)
-- creates a DID Document with a verification method
-- creates a VC (JSON) containing file metadata + hash
-- outputs a signed **VC-JWT**
+- the script **extracts the issuer DID** from `didDocument.id`
+- it selects a `verificationMethod` from the DID Document
+- it imports the issuer private key from `--seed` into the in-memory JWK store
+- it binds `verificationMethod` → keyId in the KeyId store
+- it signs a VC-JWT via `createCredentialJwt(...)`
+- (optional) it self-validates the JWT using the same DID Document (still offline)
 
-It also includes a verifier CLI that:
-
-- takes the **same file** (`--file`) to recompute SHA-256
-- takes either a **bundle** (`--bundle`) or a **raw VC-JWT** (`--jwt`)
-- verifies **signature + hash match + time claims** (`nbf/exp`)
-
-> Note: `did:iota` is not deterministically derivable from a seed alone without publishing on-chain. This CLI uses `did:jwk` because it’s fully offline and deterministic.
+> Important: the seed is interpreted exactly like your DID creation flow, using  
+> `Ed25519Keypair.deriveKeypairFromSeed(seedHex)`.
 
 ---
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 20
 - npm
-- Bash environment (Linux/macOS/WSL OK)
+- Bash environment (Linux/macOS/WSL/Windows PowerShell OK)
 
 ---
 
@@ -34,6 +28,13 @@ It also includes a verifier CLI that:
 
 ```bash
 npm i
+```
+
+Dependencies needed:
+
+```bash
+npm i @iota/iota-sdk
+npm i @iota/identity-wasm@beta
 ```
 
 ---
@@ -46,114 +47,79 @@ npm run build
 
 ---
 
-## Issue a VC for a file
+## Prepare the DID Document file
 
-```bash
-node dist/issue-file-vc.js --file "./eventi 23-12-2025.zip" --seed "0x0123...deadbeef"
-```
+Save the resolved DID document JSON to a file, e.g. `did.json`.
 
-Options:
+The tool accepts both:
 
-- `--file <path>`: file path to attest (required)
-- `--seed <hex|0xhex>`: seed in hex (required)
-  - if it’s not exactly 32 bytes, it is normalized with `sha256(seedBytes)`
-- `--out <dir>`: output directory (default: `.`)
-- `--kid <string>`: method fragment (default: `key-1`)
+- `{ "doc": { ... }, "meta": { ... } }` (IOTA resolve format), or
+- `{ ... }` (plain DID Document)
 
-Example with output dir:
-
-```bash
-node dist/issue-file-vc.js \
-  --file "./eventi 23-12-2025.zip" \
-  --seed "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
-  --out "./out" \
-  --kid "key-1"
-```
+It will automatically use `doc.id` (or `id`) as the issuer DID.
 
 ---
 
-## Output (issuer)
+## Issue a VC-JWT for a file (offline)
 
-The issuer CLI prints a JSON “bundle” to `stdout` and also writes a file:
+```bash
+node dist/issue-file-vc.js \
+  --file "./test.txt" \
+  --seed "c42c2d8a69456c66......." \
+  --did-doc "./did.json" \
+  --out "./out"
+```
+
+### Options
+
+- `--file <path>`: file path to attest (required)
+- `--seed <64-hex>`: issuer seed used to create the DID key (required)
+- `--did-doc <path>`: DID Document JSON file (required)
+- `--method-id <id|#fragment|fragment>`: choose a specific `verificationMethod` (default: first)
+- `--out <dir|file.json>`: output directory (default: `.`). If it ends with `.json`, it’s treated as an exact output file.
+- `--vc-id <string>`: credential id (default: `urn:uuid:<randomUUID>`)
+- `--no-validate`: skip the self-validation step
+
+### Output
+
+By default (when `--out` is a directory), it writes:
 
 `<filename>.vc.bundle.json`
 
-Example:
+The bundle contains:
 
-`eventi 23-12-2025.zip.vc.bundle.json`
-
-Typical bundle content:
-
-- `did`: derived DID (did:jwk)
-- `methodFragment`: e.g. `key-1`
-- `didDocument`: generated DID Document
-- `vc`: VC as JSON (includes SHA-256 hash of the file)
-- `vcJwt`: the VC encoded as a signed JWT (EdDSA)
+- `did`: issuer DID extracted from DID Document
+- `verificationMethodId`, `methodFragment`
+- `didDocument` (as JSON)
+- `vcJwt` (signed VC-JWT)
+- `vc` (decoded credential JSON, if validation enabled)
 
 ---
 
 ## Verify a VC against the original file
 
-### Verifier CLI
+If you have the verifier CLI from earlier, you can verify:
 
-You can verify either:
+- signature (EdDSA) using the DID Document
+- time claims (nbf/exp if present)
+- SHA-256(file) matches the value embedded in the VC
 
-- a **bundle** produced by the issuer CLI (`--bundle`), or
-- a **raw VC-JWT** string (`--jwt`)
-
-You must also provide the **file** to recompute its SHA-256 hash (`--file`).
-
-#### Verify using a bundle
+Example (bundle mode):
 
 ```bash
 node dist/verify-file-vc.js \
-  --bundle "./out/eventi 23-12-2025.zip.vc.bundle.json" \
-  --file "./eventi 23-12-2025.zip"
-```
-
-#### Verify using a raw VC-JWT
-
-```bash
-node dist/verify-file-vc.js \
-  --jwt "eyJ..." \
-  --file "./eventi 23-12-2025.zip"
-```
-
-#### Optional: override “now” for time-claim checks
-
-The verifier checks JWT `nbf` and `exp` using the current time. You can override it:
-
-```bash
-node dist/verify-file-vc.js \
-  --bundle "./out/eventi 23-12-2025.zip.vc.bundle.json" \
-  --file "./eventi 23-12-2025.zip" \
-  --now "2026-01-16T10:00:00Z"
+  --bundle "./out/test.txt.vc.bundle.json" \
+  --file "./test.txt"
 ```
 
 ---
 
-## Verifier output and exit codes
+## Security notes
 
-The verifier prints a JSON result like:
-
-- `signatureValid`: JWS signature valid (EdDSA)
-- `hashMatch`: SHA-256(file) matches the hash claimed in the VC
-- `timeValid`: `nbf`/`exp` satisfied
-- `ok`: true only if all the above are true
-
-Exit codes:
-
-- `0` verification OK
-- `2` verification failed (signature/hash/time)
-- `1` runtime/input error (bad args, invalid JSON/JWT, etc.)
-
----
-
-## Security
-
-- **Never commit the seed.**
-- Treat real seeds as secrets (env vars, secret manager, protected files).
-- The DID is deterministic: same seed => same DID / key.
+- Never commit the seed.
+- Treat seeds as secrets (env vars / secret manager).
+- The DID Document you provide is treated as the “truth” in offline mode.  
+  If you need canonical verification, resolve the DID against the network in your verifier.
 
 ---
 
@@ -165,17 +131,9 @@ Exit codes:
 ├─ tsconfig.json
 └─ src/
    ├─ issue-file-vc.ts
-   └─ verify-file-vc.ts
+   ├─ verify-file-vc.ts
+   └─ ...
 ```
-
----
-
-## Limitations / notes
-
-- The VC is designed to “attest a file” via its hash. No on-chain anchoring is performed.
-- The verifier assumes the issuer DID is `did:jwk` and extracts the Ed25519 public key from it to verify the VC-JWT signature.
-- To produce a `did:iota` you need a different flow: create/publish an Identity on the IOTA network (RPC endpoint, gas, faucet/mainnet, etc.).
-- For ZIP files, if you need robustness against recompression/metadata changes, add a **manifest** with per-entry hashes (not included in this base CLI).
 
 ---
 

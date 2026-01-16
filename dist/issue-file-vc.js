@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 /**
- * issue-file-vc.ts (DID-doc driven, seed derivation MATCHES createDeviceDid)
+ * issue-file-vc.ts (OFFLINE, DID extracted from DID Document produced by ObjectID)
  *
  * Signs a VC-JWT attesting a file SHA-256 hash, using an EXISTING verificationMethod
  * from a provided DID Document JSON.
  *
  * Inputs:
  *  --file <path>
- *  --seed <seedHex>            (64 hex chars, EXACT same value used in createDeviceDid)
- *  --did <did:...>             (issuer DID, must match DID Document id)
+ *  --seed <seedHex>            (64 hex chars, EXACT same value used when creating the DID)
  *  --did-doc <did.json>        (resolved DID doc JSON: either {doc, meta} or doc-only)
  *
  * Optional:
@@ -18,9 +17,9 @@
  *  --no-validate                   skip local self-validation
  *
  * IMPORTANT:
- * - To match your DID creation code, we derive the keypair as:
+ * - Key derivation matches your DID creation code:
  *     Ed25519Keypair.deriveKeypairFromSeed(seedHex)
- * - For JWK.d we use the *raw* 32-byte secretKey extracted from the keypair using decodeIotaPrivateKey().
+ * - JWK.d uses the raw 32-byte secretKey extracted from keypair using decodeIotaPrivateKey().
  *
  * Node ESM / Windows:
  * - Import from "@iota/identity-wasm/node/index.js" to avoid directory-import errors.
@@ -33,7 +32,7 @@ import { Ed25519Keypair } from "@iota/iota-sdk/keypairs/ed25519";
 import { decodeIotaPrivateKey } from "@iota/iota-sdk/cryptography";
 function usageAndExit(code) {
     console.error(`Usage:
-  node dist/issue-file-vc.js --file <path> --seed <64-hex> --did <did:...> --did-doc <didDoc.json>
+  node dist/issue-file-vc.js --file <path> --seed <64-hex> --did-doc <didDoc.json>
 
 Options:
   --method-id <id|#fragment>   (default: first verificationMethod in DID doc)
@@ -110,26 +109,19 @@ function pickMethodFromDoc(didDoc, did, preferred) {
 async function main() {
     const filePath = getArg("--file");
     const seedStr = getArg("--seed");
-    const did = getArg("--did");
     const didDocPath = getArg("--did-doc");
     const methodIdArg = getArg("--method-id");
     const outArg = getArg("--out") ?? ".";
     const vcId = getArg("--vc-id") ?? uuidLike();
     const doValidate = !hasFlag("--no-validate");
-    if (!filePath || !seedStr || !did || !didDocPath)
+    if (!filePath || !seedStr || !didDocPath)
         usageAndExit(1);
     const seedHex = assertSeedHex64(seedStr);
-    // File hash
-    const fileAbs = path.resolve(filePath);
-    const fileBytes = new Uint8Array(await fs.readFile(fileAbs));
-    const fileHash = sha256Hex(fileBytes);
-    const stat = await fs.stat(fileAbs);
     // DID Document
     const didDocJson = await loadDidDocJson(didDocPath);
-    const didInDoc = String(didDocJson?.id || "");
-    if (didInDoc && didInDoc !== did) {
-        throw new Error(`DID mismatch: --did is "${did}" but DID Document id is "${didInDoc}"`);
-    }
+    const did = String(didDocJson?.id || "");
+    if (!did)
+        throw new Error("DID Document id missing (doc.id)");
     // Select verification method
     const picked = pickMethodFromDoc(didDocJson, did, methodIdArg);
     const vmJson = picked.method;
@@ -142,7 +134,7 @@ async function main() {
     const xDoc = String(jwkFromDoc?.x || "");
     if (!xDoc)
         throw new Error("verificationMethod.publicKeyJwk.x missing in DID doc");
-    // Derive keypair EXACTLY like createDeviceDid
+    // Derive keypair EXACTLY like DID creation code
     const keypair = Ed25519Keypair.deriveKeypairFromSeed(seedHex);
     const pkRaw = keypair.getPublicKey().toRawBytes();
     const pkX = toB64Url(pkRaw);
@@ -154,6 +146,11 @@ async function main() {
     if (!secretKey || secretKey.length !== 32) {
         throw new Error("Unable to extract 32-byte secretKey from keypair.getSecretKey()");
     }
+    // File hash (after DID check, so we fail fast for key mismatch)
+    const fileAbs = path.resolve(filePath);
+    const fileBytes = new Uint8Array(await fs.readFile(fileAbs));
+    const fileHash = sha256Hex(fileBytes);
+    const stat = await fs.stat(fileAbs);
     // Storage (official mem stores)
     const Storage = must(identity.Storage, "Storage");
     const JwkMemStore = must(identity.JwkMemStore, "JwkMemStore");
