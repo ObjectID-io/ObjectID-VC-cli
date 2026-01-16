@@ -1,0 +1,17 @@
+{
+  "name": "objectid-vc-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/issue-file-vc.js"
+  },
+  "dependencies": {
+    "@iota/identity-wasm": "beta",
+    "@noble/ed25519": "^2.2.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
