@@ -1,30 +1,50 @@
 #!/usr/bin/env node
+/**
+ * issue-file-vc.ts (OFFLINE, DID extracted from DID Document produced by ObjectID)
+ *
+ * Signs a VC-JWT attesting a file SHA-256 hash, using an EXISTING verificationMethod
+ * from a provided DID Document JSON.
+ *
+ * Inputs:
+ *  --file <path>
+ *  --seed <seedHex>            (64 hex chars, EXACT same value used when creating the DID)
+ *  --did-doc <did.json>        (resolved DID doc JSON: either {doc, meta} or doc-only)
+ *
+ * Optional:
+ *  --method-id <full|#frag|frag>   choose a specific verificationMethod (default: first)
+ *  --out <dir|file.json>           default "."; if ends with .json -> exact output file, else directory
+ *  --vc-id <string>                default urn:uuid:...
+ *  --no-validate                   skip local self-validation
+ *
+ * IMPORTANT:
+ * - Key derivation matches your DID creation code:
+ *     Ed25519Keypair.deriveKeypairFromSeed(seedHex)
+ * - JWK.d uses the raw 32-byte secretKey extracted from keypair using decodeIotaPrivateKey().
+ *
+ * Node ESM / Windows:
+ * - Import from "@iota/identity-wasm/node/index.js" to avoid directory-import errors.
+ */
+
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import * as ed25519 from "@noble/ed25519";
 
-/**
- * IOTA Identity WASM: i docs dicono di importare da '@iota/identity/node' vs '@iota/identity-wasm/node'
- * (dipende dalla versione/bundle). Qui facciamo fallback runtime senza dipendere dai typings.
- */
-async function loadIdentity(): Promise<any> {
-  const tries = ["@iota/identity/node", "@iota/identity-wasm/node", "@iota/identity-wasm/web"];
-  for (const mod of tries) {
-    try {
-      return await import(mod);
-    } catch {}
-  }
-  throw new Error(`Impossibile importare IOTA Identity (provati: ${tries.join(", ")})`);
-}
+import * as identity from "@iota/identity-wasm/node/index.js";
+import { Ed25519Keypair } from "@iota/iota-sdk/keypairs/ed25519";
+import { decodeIotaPrivateKey } from "@iota/iota-sdk/cryptography";
+
+type AnyJson = any;
 
 function usageAndExit(code: number): never {
   console.error(
-    `Uso:
-  node dist/issue-file-vc.js --file <path> --seed <hex32|hex64|0x..>
-Opzioni:
-  --out <dir>       (default: .)
-  --kid <string>    (default: key-1)
+    `Usage:
+  node dist/issue-file-vc.js --file <path> --seed <64-hex> --did-doc <didDoc.json>
+
+Options:
+  --method-id <id|#fragment>   (default: first verificationMethod in DID doc)
+  --out <dir|file.json>        (default: .) if ends with .json -> exact output file, else directory
+  --vc-id <string>             (default: urn:uuid:...)
+  --no-validate                skip self-validation
 `
   );
   process.exit(code);
@@ -35,179 +55,164 @@ function getArg(name: string): string | undefined {
   if (i >= 0) return process.argv[i + 1];
   return undefined;
 }
+function hasFlag(name: string): boolean {
+  return process.argv.includes(name);
+}
 
-function parseSeed32(seedStr: string): Uint8Array {
-  // Accetta: 0x..., hex64 (32 bytes), hex32 (16 bytes -> espandiamo con sha256)
-  let s = seedStr.trim().toLowerCase();
-  if (s.startsWith("0x")) s = s.slice(2);
-  if (!/^[0-9a-f]+$/.test(s)) throw new Error("Seed deve essere hex (es: 0x..., oppure hex64).");
-
-  const bytes = Buffer.from(s, "hex");
-
-  if (bytes.length === 32) return new Uint8Array(bytes);
-
-  // Se non è 32 bytes, normalizziamo: sha256(seedBytes) -> 32 bytes
-  return new Uint8Array(crypto.createHash("sha256").update(bytes).digest());
+function assertSeedHex64(seedHex: string): string {
+  const s = seedHex.trim().toLowerCase().replace(/^0x/, "");
+  if (s.length !== 64) throw new Error("SEED must have 64 hex characters (32 bytes).");
+  if (!/^[0-9a-f]+$/.test(s)) throw new Error("SEED must be hex.");
+  return s;
 }
 
 function sha256Hex(data: Uint8Array): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
-
-function b64urlEncode(buf: Uint8Array): string {
-  return Buffer.from(buf).toString("base64url");
+function toB64Url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+function uuidLike(): string {
+  return `urn:uuid:${crypto.randomUUID()}`;
 }
 
-function b64urlDecodeToBytes(s: string): Uint8Array {
-  return new Uint8Array(Buffer.from(s, "base64url"));
+function must<T>(value: T | undefined | null, name: string): T {
+  if (value === undefined || value === null) throw new Error(`Missing identity-wasm export: ${name}`);
+  return value as T;
 }
 
-/**
- * JwkStorage + KeyIdStorage “minimi” (in-memory) per far funzionare
- * generateMethod/createCredentialJwt (IOTA Identity usa MethodDigest -> keyId). :contentReference[oaicite:2]{index=2}
- */
-class DeterministicJwkStorage {
-  private keys = new Map<string, { sk: Uint8Array; pk: Uint8Array }>();
-  private identity: any;
-  private seed32: Uint8Array;
+async function loadDidDocJson(filePath: string): Promise<AnyJson> {
+  const raw = await fs.readFile(path.resolve(filePath), "utf8");
+  const obj = JSON.parse(raw);
+  return obj?.doc ?? obj;
+}
 
-  constructor(identity: any, seed32: Uint8Array) {
-    this.identity = identity;
-    this.seed32 = seed32;
+function normalizeMethodId(input: string, did: string): { methodId: string; fragment: string } {
+  if (input.startsWith(did + "#")) {
+    const fragment = input.slice(did.length); // includes "#"
+    return { methodId: input, fragment };
+  }
+  if (input.startsWith("#")) return { methodId: did + input, fragment: input };
+  return { methodId: `${did}#${input}`, fragment: `#${input}` };
+}
+
+function pickMethodFromDoc(
+  didDoc: AnyJson,
+  did: string,
+  preferred?: string
+): { method: AnyJson; methodId: string; fragment: string } {
+  const methods: AnyJson[] = Array.isArray(didDoc?.verificationMethod) ? didDoc.verificationMethod : [];
+  if (methods.length === 0) throw new Error("DID Document has no verificationMethod[]");
+
+  if (preferred) {
+    const { methodId, fragment } = normalizeMethodId(preferred, did);
+    const m = methods.find((x) => String(x?.id) === methodId);
+    if (!m) throw new Error(`verificationMethod not found in DID doc: ${methodId}`);
+    return { method: m, methodId, fragment };
   }
 
-  // JwkStorage.generate(keyType, algorithm) -> Promise<JwkGenOutput>
-  generate = async (_keyType: string, _algorithm: any) => {
-    // Chiave deterministica dal seed
-    const sk = this.seed32;
-    const pk = await ed25519.getPublicKey(sk);
-
-    const keyId = sha256Hex(pk).slice(0, 32); // breve ma stabile
-    this.keys.set(keyId, { sk, pk });
-
-    // JWK pubblico (senza "d")
-    const jwkPublicJson = {
-      kty: "OKP",
-      crv: "Ed25519",
-      x: b64urlEncode(pk),
-      alg: "EdDSA",
-      kid: `#${keyId}`,
-    };
-
-    // In WASM: JwkGenOutput.fromJSON({ jwk, keyId }) :contentReference[oaicite:3]{index=3}
-    return this.identity.JwkGenOutput.fromJSON({
-      jwk: jwkPublicJson,
-      keyId,
-    });
-  };
-
-  // JwkStorage.insert(jwk) -> Promise<keyId>
-  insert = async (jwk: any) => {
-    const d = jwk?.d;
-    const x = jwk?.x;
-    if (!d || !x) throw new Error("insert(jwk): jwk deve contenere 'd' (privata) e 'x' (pubblica).");
-
-    const sk = b64urlDecodeToBytes(String(d));
-    const pk = b64urlDecodeToBytes(String(x));
-
-    if (sk.length !== 32) throw new Error("insert(jwk): 'd' deve essere 32 bytes (Ed25519 seed).");
-
-    const keyId = sha256Hex(pk).slice(0, 32);
-    this.keys.set(keyId, { sk, pk });
-    return keyId;
-  };
-
-  // JwkStorage.sign(keyId, data, publicKey) -> Promise<Uint8Array>
-  sign = async (keyId: string, data: Uint8Array, _publicKey: any) => {
-    const entry = this.keys.get(keyId);
-    if (!entry) throw new Error(`sign: keyId non trovato: ${keyId}`);
-    return await ed25519.sign(data, entry.sk);
-  };
-
-  delete = async (keyId: string) => {
-    this.keys.delete(keyId);
-  };
-
-  exists = async (keyId: string) => {
-    return this.keys.has(keyId);
-  };
-}
-
-class InMemoryKeyIdStorage {
-  private map = new Map<string, string>();
-
-  insertKeyId = async (methodDigest: any, keyId: string) => {
-    const k = String(methodDigest.toString());
-    if (this.map.has(k)) throw new Error("insertKeyId: entry gia' esistente");
-    this.map.set(k, keyId);
-  };
-
-  getKeyId = async (methodDigest: any) => {
-    const k = String(methodDigest.toString());
-    const v = this.map.get(k);
-    if (!v) throw new Error("getKeyId: entry non trovata");
-    return v;
-  };
-
-  deleteKeyId = async (methodDigest: any) => {
-    const k = String(methodDigest.toString());
-    if (!this.map.delete(k)) throw new Error("deleteKeyId: entry non trovata");
-  };
-}
-
-function resolveMethodScope(identity: any): any {
-  // Preferisci AssertionMethod, altrimenti VerificationMethod
-  const ms = identity.MethodScope;
-  if (ms?.AssertionMethod) return ms.AssertionMethod();
-  if (ms?.VerificationMethod) return ms.VerificationMethod();
-  // fallback: prova fromJSON con stringa W3C-ish
-  if (ms?.fromJSON) return ms.fromJSON("assertionMethod");
-  throw new Error("Impossibile creare MethodScope (AssertionMethod/VerificationMethod).");
+  const m0 = methods[0];
+  const id0 = String(m0?.id || "");
+  if (!id0) throw new Error("First verificationMethod has no id");
+  const idx = id0.indexOf("#");
+  const fragment = idx >= 0 ? id0.slice(idx) : "";
+  return { method: m0, methodId: id0, fragment };
 }
 
 async function main() {
   const filePath = getArg("--file");
   const seedStr = getArg("--seed");
-  const outDir = getArg("--out") ?? ".";
-  const kid = getArg("--kid") ?? "key-1";
+  const didDocPath = getArg("--did-doc");
+  const methodIdArg = getArg("--method-id");
+  const outArg = getArg("--out") ?? ".";
+  const vcId = getArg("--vc-id") ?? uuidLike();
+  const doValidate = !hasFlag("--no-validate");
 
-  if (!filePath || !seedStr) usageAndExit(1);
+  if (!filePath || !seedStr || !didDocPath) usageAndExit(1);
 
-  const identity = await loadIdentity();
+  const seedHex = assertSeedHex64(seedStr);
 
-  const seed32 = parseSeed32(seedStr);
+  // DID Document
+  const didDocJson = await loadDidDocJson(didDocPath);
+  const did = String(didDocJson?.id || "");
+  if (!did) throw new Error("DID Document id missing (doc.id)");
 
-  // File -> hash
+  // Select verification method
+  const picked = pickMethodFromDoc(didDocJson, did, methodIdArg);
+  const vmJson = picked.method;
+  const methodId = picked.methodId;
+  const fragmentFromDoc = picked.fragment;
+  if (!fragmentFromDoc) throw new Error("Selected method id has no #fragment");
+
+  // Public key from DID doc
+  const jwkFromDoc = vmJson?.publicKeyJwk;
+  const xDoc = String(jwkFromDoc?.x || "");
+  if (!xDoc) throw new Error("verificationMethod.publicKeyJwk.x missing in DID doc");
+
+  // Derive keypair EXACTLY like DID creation code
+  const keypair = Ed25519Keypair.deriveKeypairFromSeed(seedHex);
+  const pkRaw = keypair.getPublicKey().toRawBytes();
+  const pkX = toB64Url(pkRaw);
+
+  if (pkX !== xDoc) {
+    throw new Error(
+      `Seed does NOT match DID Document publicKeyJwk.x\n` + `- derived x: ${pkX}\n` + `- doc x:     ${xDoc}`
+    );
+  }
+
+  // Extract raw 32-byte secret key for JWK 'd'
+  const { secretKey } = decodeIotaPrivateKey(keypair.getSecretKey());
+  if (!secretKey || secretKey.length !== 32) {
+    throw new Error("Unable to extract 32-byte secretKey from keypair.getSecretKey()");
+  }
+
+  // File hash (after DID check, so we fail fast for key mismatch)
   const fileAbs = path.resolve(filePath);
-  const bytes = new Uint8Array(await fs.readFile(fileAbs));
-  const fileHash = sha256Hex(bytes);
+  const fileBytes = new Uint8Array(await fs.readFile(fileAbs));
+  const fileHash = sha256Hex(fileBytes);
   const stat = await fs.stat(fileAbs);
 
-  // Deriva DID:JWK dal JWK pubblico (solo x/crv/kty/alg).
-  const pk = await ed25519.getPublicKey(seed32);
-  const publicJwk = { kty: "OKP", crv: "Ed25519", x: b64urlEncode(pk), alg: "EdDSA" };
-  const didMethodId = b64urlEncode(new TextEncoder().encode(JSON.stringify(publicJwk)));
-  const did = `did:jwk:${didMethodId}`;
+  // Storage (official mem stores)
+  const Storage = must((identity as any).Storage, "Storage");
+  const JwkMemStore = must((identity as any).JwkMemStore, "JwkMemStore");
+  const KeyIdMemStore = must((identity as any).KeyIdMemStore, "KeyIdMemStore");
+  const storage = new Storage(new JwkMemStore(), new KeyIdMemStore());
 
-  // Storage + Doc
-  const jwkStore = new DeterministicJwkStorage(identity, seed32);
-  const keyIdStore = new InMemoryKeyIdStorage();
-  const storage = new identity.Storage(jwkStore, keyIdStore);
+  // Insert private key JWK (x from DID doc, d from secretKey)
+  const Jwk = must((identity as any).Jwk, "Jwk");
+  const jwkPriv = Jwk.fromJSON({
+    kty: "OKP",
+    crv: "Ed25519",
+    alg: "EdDSA",
+    x: xDoc,
+    d: toB64Url(secretKey),
+  });
 
-  const doc = new identity.CoreDocument({ id: did });
+  const keyId = await storage.keyStorage().insert(jwkPriv);
 
-  // Inserisce un verification method generato (deterministico, perché il JwkStorage.generate lo è)
-  const scope = resolveMethodScope(identity);
-  const alg = identity.JwsAlgorithm?.EdDSA ?? "EdDSA";
-  const fragment = await doc.generateMethod(storage, "ed25519", alg, kid, scope);
+  // Build issuer document from provided DID doc JSON
+  const CoreDocument = must((identity as any).CoreDocument, "CoreDocument");
+  const issuerDocument = CoreDocument.fromJSON ? CoreDocument.fromJSON(didDocJson) : new CoreDocument(didDocJson);
 
-  // Credential (VC Data Model v1.1) e firma come VC-JWT :contentReference[oaicite:4]{index=4}
-  const now = new Date().toISOString();
-  const vcJson = {
-    "@context": ["https://www.w3.org/2018/credentials/v1"],
-    type: ["VerifiableCredential", "FileHashCredential"],
-    issuer: did,
-    issuanceDate: now,
+  // Bind method digest -> keyId
+  const MethodDigest = must((identity as any).MethodDigest, "MethodDigest");
+  const VerificationMethod = must((identity as any).VerificationMethod, "VerificationMethod");
+  const vmInst = VerificationMethod.fromJSON ? VerificationMethod.fromJSON(vmJson) : new VerificationMethod(vmJson);
+
+  let digest: any;
+  if (typeof (MethodDigest as any).fromMethod === "function") digest = (MethodDigest as any).fromMethod(vmInst);
+  else if (typeof (MethodDigest as any).fromVerificationMethod === "function")
+    digest = (MethodDigest as any).fromVerificationMethod(vmInst);
+  else digest = new (MethodDigest as any)(vmInst);
+
+  await storage.keyIdStorage().insertKeyId(digest, keyId);
+
+  // Create unsigned VC
+  const Credential = must((identity as any).Credential, "Credential");
+  const unsignedVc = new Credential({
+    id: vcId,
+    type: "FileHashCredential",
+    issuer: issuerDocument.id(),
     credentialSubject: {
       id: did,
       file: {
@@ -216,34 +221,57 @@ async function main() {
         sha256: fileHash,
       },
     },
-  };
-
-  const credential = identity.Credential.fromJSON(vcJson);
-
-  // Signature options
-  const sigOptions = identity.JwsSignatureOptions.fromJSON({ typ: "JWT" });
-
-  const jwt = await doc.createCredentialJwt(storage, fragment, credential, sigOptions, {
-    // claim extra opzionali
-    iat: Math.floor(Date.now() / 1000),
   });
 
-  // Output
-  await fs.mkdir(outDir, { recursive: true });
-  const base = path.basename(fileAbs);
+  // Sign VC-JWT using existing method fragment (from DID doc)
+  const JwsSignatureOptions = must((identity as any).JwsSignatureOptions, "JwsSignatureOptions");
+  const credentialJwt = await issuerDocument.createCredentialJwt(
+    storage,
+    fragmentFromDoc,
+    unsignedVc,
+    new JwsSignatureOptions()
+  );
+
+  // Optional self-validation
+  let vcJsonOut: AnyJson = unsignedVc.toJSON();
+  if (doValidate) {
+    const JwtCredentialValidator = must((identity as any).JwtCredentialValidator, "JwtCredentialValidator");
+    const EdDSAJwsVerifier = must((identity as any).EdDSAJwsVerifier, "EdDSAJwsVerifier");
+    const JwtCredentialValidationOptions = must(
+      (identity as any).JwtCredentialValidationOptions,
+      "JwtCredentialValidationOptions"
+    );
+    const FailFast = must((identity as any).FailFast, "FailFast");
+
+    const decoded = new JwtCredentialValidator(new EdDSAJwsVerifier()).validate(
+      credentialJwt,
+      issuerDocument,
+      new JwtCredentialValidationOptions(),
+      FailFast.FirstError
+    );
+    vcJsonOut = decoded.intoCredential().toJSON();
+  }
+
+  // Output path: treat --out ending with .json as file, otherwise directory
+  const outIsFile = outArg.toLowerCase().endsWith(".json");
+  const outPath = outIsFile
+    ? path.resolve(outArg)
+    : path.join(path.resolve(outArg), `${path.basename(fileAbs)}.vc.bundle.json`);
+
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+
   const outBundle = {
     did,
-    methodFragment: fragment,
-    didDocument: doc.toJSON(),
-    vc: vcJson,
-    vcJwt: jwt.toString(),
+    didDocument: issuerDocument.toJSON(),
+    verificationMethodId: methodId,
+    methodFragment: fragmentFromDoc,
+    vcJwt: credentialJwt.toString(),
+    vc: vcJsonOut,
   };
 
-  const outPath = path.join(outDir, `${base}.vc.bundle.json`);
   await fs.writeFile(outPath, JSON.stringify(outBundle, null, 2), "utf8");
-
   console.log(JSON.stringify(outBundle, null, 2));
-  console.error(`\nOK: scritto ${outPath}`);
+  console.error(`\nOK: wrote ${outPath}`);
 }
 
 main().catch((e) => {

@@ -1,0 +1,31 @@
+{
+  "doc": {
+    "id": "did:iota:0xf72910599a4a8ef4d7c72f5832a14451fd82d849a82c82135d62302d11b58ad9",
+    "verificationMethod": [
+      {
+        "id": "did:iota:0xf72910599a4a8ef4d7c72f5832a14451fd82d849a82c82135d62302d11b58ad9#hb9kKzGAKY6ZdNlxBD2mKPPIaIw",
+        "controller": "did:iota:0xf72910599a4a8ef4d7c72f5832a14451fd82d849a82c82135d62302d11b58ad9",
+        "type": "JsonWebKey2020",
+        "publicKeyJwk": {
+          "kty": "OKP",
+          "alg": "EdDSA",
+          "crv": "Ed25519",
+          "x": "NNtpAXFvG_W6shfa-04Td6Kus5UmQL7ITu41EWIJiUY"
+        }
+      }
+    ],
+    "service": [
+      {
+        "id": "did:iota:0xf72910599a4a8ef4d7c72f5832a14451fd82d849a82c82135d62302d11b58ad9#ObjectIDURL",
+        "type": "LinkedDomains",
+        "serviceEndpoint": [
+          "https://dapp.objectid.io/oid=0x7e61ed033db9548164414c8b5a89d01e4336a0690dafc4918741efae50dae784"
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "created": "2026-01-16T13:02:25Z",
+    "updated": "2026-01-16T13:02:34Z"
+  }
+}

@@ -8,8 +8,9 @@
     "start": "node dist/issue-file-vc.js"
   },
   "dependencies": {
-    "@iota/identity-wasm": "beta",
-    "@noble/ed25519": "^2.2.3"
+    "@iota/identity-wasm": "^1.8.0-beta.2",
+    "@iota/iota-sdk": "^1.4.0",
+    "@noble/ed25519": "^3.0.0"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
