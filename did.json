@@ -1,0 +1,32 @@
+{
+  "doc": {
+    "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
+    "alsoKnownAs": ["urn:oid:testnet:0x894d83222e3241631bb3dfeb1f6d77987b16b911ab88da5ff843c9262c0c802b"],
+    "verificationMethod": [
+      {
+        "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3#0gtWnoBQmpkBTqFYg0IYw9-QayM",
+        "controller": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
+        "type": "JsonWebKey2020",
+        "publicKeyJwk": {
+          "kty": "OKP",
+          "alg": "EdDSA",
+          "crv": "Ed25519",
+          "x": "Y7Y-Lg86dRG3zfrtMgiGN1oAjzjJHyPOG8aA7J3Htew"
+        }
+      }
+    ],
+    "service": [
+      {
+        "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3#ObjectIDURL",
+        "type": "LinkedDomains",
+        "serviceEndpoint": [
+          "https://dapp.objectid.io/oid=0x894d83222e3241631bb3dfeb1f6d77987b16b911ab88da5ff843c9262c0c802b&n=testnet"
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "created": "2026-01-19T10:25:14Z",
+    "updated": "2026-01-19T10:25:21Z"
+  }
+}
