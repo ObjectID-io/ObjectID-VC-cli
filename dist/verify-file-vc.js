@@ -1,193 +1,446 @@
 #!/usr/bin/env node
 /**
- * verify-file-vc.ts (OFFLINE, DID Document driven) - FIXED for identity-wasm builds where
- * JwtCredentialValidator.validate expects a Jwt instance (not a string).
+ * verify-file-vc.ts
  *
- * Verifies a VC-JWT against:
- * - issuer DID Document (provided via --did-doc or embedded in the bundle)
- * - original file (recomputes SHA-256 and compares with VC claim)
+ * Verifies:
+ * 1) VC-JWT signature + VC semantics (IOTA Identity WASM)
+ * 2) File hash matches VC claim (SHA-256)
+ * 3) Fetches an Object from IOTA via getObject (RPC)
+ * 4) Extracts owner DID from object fields (owner_did / ownerDid / ownerDID)
+ * 5) Resolves the owner DID Document from IOTA (RPC)
+ * 6) Checks for LinkedDomains service (DLVC signal)
+ * 7) Validates DLVC and prints linked domain(s)
  *
- * Inputs:
- *  --file <path>                       (required)
- *  --bundle <bundle.json>              OR --jwt <vcJwt>  (required)
+ * Notes:
+ * - ONLINE is required for resolving DIDs + getObject.
+ * - Works with identity-wasm "node" entrypoint.
  *
- * If --bundle is used, the bundle may contain didDocument already.
- * If --jwt is used, you must provide --did-doc.
- *
- * Optional:
- *  --did-doc <did.json>                override / provide issuer DID Document JSON
- *  --no-validate                        skip Identity signature/VC semantic validation (hash-only)
- *
- * Node ESM / Windows:
- * - Import from "@iota/identity-wasm/node/index.js" to avoid directory-import errors.
+ * Windows ESM:
+ * - Import from "@iota/identity-wasm/node/index.js" (not "@iota/identity-wasm/node").
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { IotaClient } from "@iota/iota-sdk/client";
 import * as identity from "@iota/identity-wasm/node/index.js";
 function usageAndExit(code) {
     console.error(`Usage:
-  node dist/verify-file-vc.js --file <path> --bundle <bundle.json>
-  node dist/verify-file-vc.js --file <path> --jwt <vcJwt> --did-doc <did.json>
+  node dist/verify-file-vc.js --file <path> --bundle <bundle.json> --rpc <url> [--oid <objectId>]
+  node dist/verify-file-vc.js --file <path> --jwt <vcJwt> --rpc <url> [--oid <objectId>]
 
 Options:
-  --did-doc <did.json>     provide/override issuer DID Document JSON (resolved format {doc,meta} or plain)
-  --no-validate            skip Identity signature/VC checks (hash-only)
+  --rpc <url>                 IOTA RPC endpoint (required)
+  --bundle <bundle.json>      bundle produced by issuer (contains vcJwt)
+  --jwt <vcJwt>               VC-JWT string (alternative to --bundle)
+  --oid <objectId>            object id to fetch (0x...)
+  --dlvc-proxy <url>          optional proxy (POST {did,network} -> {didConfiguration})
+  --no-validate               skip VC-JWT signature/semantic validation (hash-only)
 `);
     process.exit(code);
 }
-function getArg(name) {
+function arg(name) {
     const i = process.argv.indexOf(name);
-    if (i >= 0)
-        return process.argv[i + 1];
-    return undefined;
+    return i >= 0 ? process.argv[i + 1] : undefined;
 }
-function hasFlag(name) {
+function flag(name) {
     return process.argv.includes(name);
 }
 function sha256Hex(data) {
     return crypto.createHash("sha256").update(data).digest("hex");
 }
-function must(value, name) {
-    if (value === undefined || value === null)
-        throw new Error(`Missing identity-wasm export: ${name}`);
-    return value;
-}
-async function loadJson(filePath) {
+async function readJsonFile(filePath) {
     const raw = await fs.readFile(path.resolve(filePath), "utf8");
     return JSON.parse(raw);
 }
-async function loadDidDocJson(filePath) {
-    const obj = await loadJson(filePath);
-    return obj?.doc ?? obj;
+function ensureRecord(v, name) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) {
+        throw new Error(`${name} must be an object`);
+    }
+    return v;
 }
-function didDocFromBundle(bundle) {
-    const dd = bundle?.didDocument ?? bundle?.did_document ?? bundle?.issuerDidDocument;
-    if (!dd)
-        return undefined;
-    return dd?.doc ?? dd;
+function must(value, name) {
+    if (value === undefined || value === null) {
+        throw new Error(`Missing required export: ${name}`);
+    }
+    return value;
 }
-function extractClaimedHashFromCredential(credJson) {
-    const h1 = credJson?.credentialSubject?.file?.sha256;
-    if (typeof h1 === "string" && h1.length > 0)
-        return h1;
-    const h2 = credJson?.credentialSubject?.document?.digest?.value;
-    if (typeof h2 === "string" && h2.length > 0)
-        return h2;
-    return undefined;
-}
-function extractVcFromJwtPayload(vcJwt) {
-    const parts = vcJwt.split(".");
+function extractIssFromJwt(jwt) {
+    const parts = jwt.split(".");
     if (parts.length !== 3)
-        return undefined;
+        throw new Error("Invalid JWT format");
     const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-    return payload?.vc;
+    const p = ensureRecord(payload, "JWT payload");
+    const iss = p["iss"];
+    if (typeof iss !== "string" || !iss.startsWith("did:"))
+        throw new Error("JWT payload missing valid 'iss'");
+    return iss;
 }
-function toJwtInstance(vcJwt) {
-    const Jwt = identity.Jwt;
-    if (!Jwt)
-        return vcJwt; // fallback: caller may accept string (other builds)
-    if (typeof Jwt.fromString === "function")
-        return Jwt.fromString(vcJwt);
-    if (typeof Jwt.fromJWT === "function")
-        return Jwt.fromJWT(vcJwt);
-    if (typeof Jwt.fromJson === "function")
-        return Jwt.fromJson(vcJwt);
+function extractVcFromJwtPayload(jwt) {
+    const parts = jwt.split(".");
+    if (parts.length !== 3)
+        throw new Error("Invalid JWT format");
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    const p = ensureRecord(payload, "JWT payload");
+    const vc = p["vc"];
+    return ensureRecord(vc, "JWT payload.vc");
+}
+function extractClaimedFileHash(vc) {
+    const cs = ensureRecord(vc["credentialSubject"], "vc.credentialSubject");
+    const file = ensureRecord(cs["file"], "vc.credentialSubject.file");
+    const h = file["sha256"];
+    if (typeof h !== "string" || h.length === 0)
+        throw new Error("VC missing credentialSubject.file.sha256");
+    return h;
+}
+function toJwtInstance(jwtStr) {
+    const JwtCtor = identity["Jwt"];
+    if (!JwtCtor)
+        return jwtStr;
+    const JwtObj = JwtCtor;
+    if (typeof JwtObj !== "function" && typeof JwtObj !== "object")
+        return jwtStr;
+    // try static fromString
+    const fromString = JwtObj["fromString"];
+    if (typeof fromString === "function") {
+        return fromString(jwtStr);
+    }
+    // try constructor
     try {
-        return new Jwt(vcJwt);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+        return new JwtCtor(jwtStr);
     }
     catch {
-        return vcJwt;
+        return jwtStr;
     }
 }
+async function resolveDidDocument(rpcUrl, did) {
+    const client = new IotaClient({ url: rpcUrl });
+    // IdentityClientReadOnly.create(client)
+    const roCtor = identity["IdentityClientReadOnly"];
+    if (!roCtor || typeof roCtor !== "function") {
+        throw new Error("identity-wasm missing IdentityClientReadOnly");
+    }
+    const create = roCtor["create"];
+    if (typeof create !== "function") {
+        throw new Error("IdentityClientReadOnly.create is not available");
+    }
+    const ro = await create(client);
+    // build DID instance if possible, else pass string
+    let didArg = did;
+    const IotaDID = identity["IotaDID"];
+    if (IotaDID && (typeof IotaDID === "function" || typeof IotaDID === "object")) {
+        const fromString = IotaDID["fromString"];
+        const parse = IotaDID["parse"];
+        if (typeof fromString === "function") {
+            didArg = fromString(did);
+        }
+        else if (typeof parse === "function") {
+            didArg = parse(did);
+        }
+    }
+    const roObj = ro;
+    return await roObj.resolveDid(didArg);
+}
+function didDocToJson(resolved) {
+    // resolved can be:
+    // - { doc, meta }
+    // - a Document instance with toJSON() returning either plain DID doc OR {doc,meta}
+    // - a plain DID doc object
+    if (!resolved || typeof resolved !== "object") {
+        throw new Error("Unexpected DID resolution result");
+    }
+    const r = resolved;
+    // { doc, meta } format already
+    if (r["doc"] && typeof r["doc"] === "object") {
+        return ensureRecord(r["doc"], "resolved.doc");
+    }
+    // Document instance (WASM). IMPORTANT: call toJSON with correct `this`.
+    if (typeof resolved.toJSON === "function") {
+        const j = resolved.toJSON();
+        const jr = ensureRecord(j, "resolved.toJSON()");
+        if (jr["doc"] && typeof jr["doc"] === "object") {
+            return ensureRecord(jr["doc"], "resolved.toJSON().doc");
+        }
+        return jr;
+    }
+    // already a plain object
+    return ensureRecord(resolved, "resolved");
+}
+async function getObject(client, id) {
+    const { data } = await client.getObject({
+        id,
+        options: {
+            showType: true,
+            showOwner: true,
+            showPreviousTransaction: false,
+            showDisplay: true,
+            showContent: true,
+            showBcs: true,
+            showStorageRebate: false,
+        },
+    });
+    if (!data)
+        throw new Error("Object not found");
+    return data;
+}
+function extractFields(obj) {
+    // SDK structure: data.content.fields
+    const content = obj["content"];
+    if (!content || typeof content !== "object")
+        return undefined;
+    const fields = content["fields"];
+    if (!fields || typeof fields !== "object" || Array.isArray(fields))
+        return undefined;
+    return fields;
+}
+function extractOwnerDidFromFields(fields) {
+    const candidates = [fields["owner_did"], fields["ownerDid"], fields["ownerDID"], fields["owner"]].filter((v) => typeof v === "string");
+    for (const c of candidates) {
+        if (c.startsWith("did:"))
+            return c;
+    }
+    return undefined;
+}
+function extractObjectIdFromIssuerDidDoc(didDoc) {
+    // alsoKnownAs: ["urn:oid:testnet:0x..."]
+    const aka = didDoc["alsoKnownAs"];
+    if (Array.isArray(aka)) {
+        for (const v of aka) {
+            if (typeof v !== "string")
+                continue;
+            const m = v.match(/urn:oid:(?:testnet:|mainnet:|iota:)?(0x[0-9a-fA-F]{16,})/);
+            if (m?.[1])
+                return m[1];
+        }
+    }
+    // serviceEndpoint URL: https://.../oid=0x...
+    const service = didDoc["service"];
+    if (Array.isArray(service)) {
+        for (const s of service) {
+            if (!s || typeof s !== "object")
+                continue;
+            const se = s["serviceEndpoint"];
+            const endpoints = typeof se === "string" ? [se] : Array.isArray(se) ? se.filter((x) => typeof x === "string") : [];
+            for (const ep of endpoints) {
+                try {
+                    const u = new URL(ep);
+                    const oid = u.searchParams.get("oid");
+                    if (oid && oid.startsWith("0x"))
+                        return oid;
+                }
+                catch { }
+            }
+        }
+    }
+    return undefined;
+}
+function extractLinkedDomains(didDoc) {
+    const service = didDoc["service"];
+    if (!Array.isArray(service))
+        return [];
+    const out = [];
+    for (const s of service) {
+        if (!s || typeof s !== "object")
+            continue;
+        const t = s["type"];
+        const typeStr = Array.isArray(t)
+            ? t.filter((x) => typeof x === "string").join(",")
+            : typeof t === "string"
+                ? t
+                : "";
+        if (!typeStr.includes("LinkedDomains"))
+            continue;
+        const se = s["serviceEndpoint"];
+        const endpoints = typeof se === "string" ? [se] : Array.isArray(se) ? se.filter((x) => typeof x === "string") : [];
+        for (const ep of endpoints) {
+            try {
+                const u = new URL(ep);
+                out.push(u.origin + "/");
+            }
+            catch { }
+        }
+    }
+    return Array.from(new Set(out));
+}
+function didNetwork(did) {
+    return did.includes(":testnet:") ? "testnet" : "mainnet";
+}
+async function fetchDidConfiguration(origin) {
+    const url = origin.replace(/\/$/, "/") + ".well-known/did-configuration.json";
+    const res = await fetch(url);
+    if (!res.ok)
+        throw new Error(`HTTP ${res.status} fetching did-configuration`);
+    return (await res.json());
+}
+async function fetchDidConfigurationViaProxy(proxyUrl, did, network) {
+    const res = await fetch(proxyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ did, network }),
+    });
+    if (!res.ok)
+        throw new Error(`HTTP ${res.status} from proxy`);
+    const j = (await res.json());
+    const obj = ensureRecord(j, "proxy response");
+    const dc = obj["didConfiguration"];
+    return dc ?? j;
+}
+async function validateDlvc(ownerDid, ownerResolved, ownerDidDocJson, proxyUrl) {
+    const domains = extractLinkedDomains(ownerDidDocJson);
+    if (domains.length === 0)
+        return { valid: false, domains: [], error: "No LinkedDomains service in owner DID Document" };
+    const DomainLinkageConfiguration = identity["DomainLinkageConfiguration"];
+    const JwtDomainLinkageValidator = identity["JwtDomainLinkageValidator"];
+    const EdDSAJwsVerifier = identity["EdDSAJwsVerifier"];
+    const JwtCredentialValidationOptions = identity["JwtCredentialValidationOptions"];
+    if (!DomainLinkageConfiguration ||
+        !JwtDomainLinkageValidator ||
+        !EdDSAJwsVerifier ||
+        !JwtCredentialValidationOptions) {
+        return { valid: false, domains, error: "identity-wasm missing DLVC validator exports" };
+    }
+    // ownerResolved must be a Document instance for validateLinkage (we pass the resolved object from identity)
+    const ownerDoc = ownerResolved;
+    for (const origin of domains) {
+        try {
+            const cfgJson = proxyUrl
+                ? await fetchDidConfigurationViaProxy(proxyUrl, ownerDid, didNetwork(ownerDid))
+                : await fetchDidConfiguration(origin);
+            const cfg = DomainLinkageConfiguration["fromJSON"];
+            if (typeof cfg !== "function")
+                throw new Error("DomainLinkageConfiguration.fromJSON not available");
+            const cfgObj = cfg(cfgJson);
+            const validator = new JwtDomainLinkageValidator(new EdDSAJwsVerifier());
+            // DID linked url: any LinkedDomains serviceEndpoint string
+            const didLinkedUrl = origin; // good enough for validator in most builds
+            const opts = new JwtCredentialValidationOptions();
+            validator.validateLinkage(ownerDoc, cfgObj, didLinkedUrl, opts);
+            return { valid: true, domains };
+        }
+        catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            // try next domain
+            if (origin === domains[domains.length - 1])
+                return { valid: false, domains, error: msg };
+        }
+    }
+    return { valid: false, domains, error: "DLVC validation failed" };
+}
 async function main() {
-    const filePath = getArg("--file");
-    const bundlePath = getArg("--bundle");
-    const jwtArg = getArg("--jwt");
-    const didDocPath = getArg("--did-doc");
-    const noValidate = hasFlag("--no-validate");
-    if (!filePath || (!bundlePath && !jwtArg))
+    const filePath = arg("--file");
+    const bundlePath = arg("--bundle");
+    const jwtStr = arg("--jwt");
+    const rpcUrl = arg("--rpc");
+    const oidArg = arg("--oid");
+    const proxyUrl = arg("--dlvc-proxy");
+    const noValidate = flag("--no-validate");
+    if (!filePath || !rpcUrl || (!bundlePath && !jwtStr))
         usageAndExit(1);
-    // ---- Load inputs
+    // VC-JWT
     let vcJwt;
-    let bundle;
+    let bundleJson;
     if (bundlePath) {
-        bundle = await loadJson(bundlePath);
-        vcJwt = String(bundle?.vcJwt ?? bundle?.vc_jwt ?? "");
-        if (!vcJwt)
+        const b = await readJsonFile(bundlePath);
+        bundleJson = ensureRecord(b, "bundle");
+        const v = bundleJson["vcJwt"];
+        if (typeof v !== "string" || v.length === 0)
             throw new Error("Bundle missing vcJwt");
+        vcJwt = v;
     }
     else {
-        vcJwt = String(jwtArg);
+        vcJwt = String(jwtStr);
     }
-    // ---- Load DID Document JSON (override > bundle > required)
-    let didDocJson;
-    if (didDocPath) {
-        didDocJson = await loadDidDocJson(didDocPath);
-    }
-    else if (bundle) {
-        didDocJson = didDocFromBundle(bundle);
-    }
-    if (!didDocJson) {
-        throw new Error("Missing DID Document. Provide --did-doc or use a bundle that embeds didDocument.");
-    }
-    // ---- Build issuer document (offline)
-    const CoreDocument = must(identity.CoreDocument, "CoreDocument");
-    const issuerDocument = CoreDocument.fromJSON ? CoreDocument.fromJSON(didDocJson) : new CoreDocument(didDocJson);
-    const issuerDid = String(issuerDocument.id ? issuerDocument.id().toString() : didDocJson?.id ?? "");
-    // ---- Verify signature + VC semantics (offline) using Identity WASM
-    let signatureValid = false;
-    let decodedCredentialJson;
-    let validationError;
+    const issuerDid = extractIssFromJwt(vcJwt);
+    // Resolve issuer DID doc (ONLINE, because you said issuer DID isn't in bundle)
+    const issuerResolved = await resolveDidDocument(rpcUrl, issuerDid);
+    const issuerDidDocJson = didDocToJson(issuerResolved);
+    // Validate VC-JWT signature + semantics
+    let signatureValid = undefined;
+    let validationError = undefined;
+    let vcJson;
     if (!noValidate) {
         try {
-            const JwtCredentialValidator = must(identity.JwtCredentialValidator, "JwtCredentialValidator");
-            const EdDSAJwsVerifier = must(identity.EdDSAJwsVerifier, "EdDSAJwsVerifier");
-            const JwtCredentialValidationOptions = must(identity.JwtCredentialValidationOptions, "JwtCredentialValidationOptions");
-            const FailFast = must(identity.FailFast, "FailFast");
+            const JwtCredentialValidator = must(identity["JwtCredentialValidator"], "JwtCredentialValidator");
+            const EdDSAJwsVerifier = must(identity["EdDSAJwsVerifier"], "EdDSAJwsVerifier");
+            const JwtCredentialValidationOptions = must(identity["JwtCredentialValidationOptions"], "JwtCredentialValidationOptions");
+            const FailFast = must(identity["FailFast"], "FailFast");
             const jwtObj = toJwtInstance(vcJwt);
-            const decoded = new JwtCredentialValidator(new EdDSAJwsVerifier()).validate(jwtObj, issuerDocument, new JwtCredentialValidationOptions(), FailFast.FirstError);
-            decodedCredentialJson = decoded.intoCredential().toJSON();
-            signatureValid = true; // will fail in TS, fix below
+            const decoded = new JwtCredentialValidator(new EdDSAJwsVerifier()).validate(jwtObj, issuerResolved, new JwtCredentialValidationOptions(), FailFast["FirstError"]);
+            const decodedJson = decoded.intoCredential().toJSON();
+            vcJson = ensureRecord(decodedJson, "decoded VC");
+            signatureValid = true;
         }
         catch (e) {
             signatureValid = false;
-            validationError = e?.message ?? String(e);
+            validationError = e instanceof Error ? e.message : String(e);
+            vcJson = extractVcFromJwtPayload(vcJwt);
         }
     }
-    // Fix TS boolean capitalization
-    if (signatureValid === globalThis.True) {
-        signatureValid = true;
+    else {
+        vcJson = extractVcFromJwtPayload(vcJwt);
     }
-    // If validation is skipped or failed, still try to parse the VC claim from JWT payload (best-effort)
-    if (!decodedCredentialJson) {
-        decodedCredentialJson = extractVcFromJwtPayload(vcJwt);
-    }
-    if (!decodedCredentialJson)
-        throw new Error("Unable to extract VC from JWT (no vc claim)");
-    // ---- File hash check
+    // File hash
     const fileAbs = path.resolve(filePath);
     const fileBytes = new Uint8Array(await fs.readFile(fileAbs));
     const fileHash = sha256Hex(fileBytes);
-    const claimedHash = extractClaimedHashFromCredential(decodedCredentialJson);
-    if (!claimedHash)
-        throw new Error("VC does not contain a supported hash claim (credentialSubject.file.sha256)");
-    const hashMatch = fileHash.toLowerCase() === String(claimedHash).toLowerCase();
-    const ok = (noValidate ? true : signatureValid) && hashMatch;
+    const claimedHash = extractClaimedFileHash(vcJson);
+    const hashMatch = fileHash.toLowerCase() === claimedHash.toLowerCase();
+    // Object fetch
+    const iota = new IotaClient({ url: rpcUrl });
+    const oid = oidArg ?? extractObjectIdFromIssuerDidDoc(issuerDidDocJson);
+    let object = undefined;
+    let ownerDid = undefined;
+    if (oid) {
+        object = await getObject(iota, oid);
+        const fields = extractFields(object);
+        if (fields)
+            ownerDid = extractOwnerDidFromFields(fields);
+    }
+    // Resolve owner DID + DLVC
+    let ownerDidDocJson = undefined;
+    let dlvc = undefined;
+    if (ownerDid) {
+        const ownerResolved = await resolveDidDocument(rpcUrl, ownerDid);
+        ownerDidDocJson = didDocToJson(ownerResolved);
+        dlvc = await validateDlvc(ownerDid, ownerResolved, ownerDidDocJson, proxyUrl);
+    }
+    const ok = (noValidate ? true : signatureValid === true) && hashMatch && (ownerDid ? dlvc?.valid === true : true);
     const result = {
         ok,
-        issuerDid,
-        signatureValid: noValidate ? undefined : signatureValid,
-        validationError: noValidate ? undefined : validationError,
-        hashMatch,
-        file: { path: fileAbs, sha256: fileHash },
-        vcClaimedHash: claimedHash,
-        vc: decodedCredentialJson,
+        vc: {
+            issuerDid,
+            signatureValid: noValidate ? undefined : signatureValid,
+            validationError: noValidate ? undefined : validationError,
+            hashMatch,
+            vcClaimedHash: claimedHash,
+            file: { path: fileAbs, sha256: fileHash },
+        },
+        issuerDidDocument: {
+            id: issuerDidDocJson.id ?? null,
+            alsoKnownAs: issuerDidDocJson.alsoKnownAs ?? null,
+            services: issuerDidDocJson.service ?? null,
+        },
+        object: oid
+            ? {
+                oid,
+                type: object?.type ?? null,
+                ownerDid: ownerDid ?? null,
+                fields: object ? extractFields(object) ?? null : null,
+            }
+            : { oid: null, ownerDid: null, note: "Provide --oid or add alsoKnownAs/service in issuer DID doc" },
+        owner: ownerDid
+            ? {
+                did: ownerDid,
+                linkedDomains: dlvc?.domains ?? [],
+                dlvcValid: dlvc?.valid ?? false,
+                dlvcError: dlvc?.error,
+            }
+            : null,
     };
     console.log(JSON.stringify(result, null, 2));
     process.exit(ok ? 0 : 2);
 }
 main().catch((e) => {
-    console.error(e?.stack ?? String(e));
+    console.error(e instanceof Error ? e.stack : String(e));
     process.exit(1);
 });
