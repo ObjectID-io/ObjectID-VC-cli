@@ -1,54 +1,54 @@
 {
-  "did": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
+  "did": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b",
   "didDocument": {
-    "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
+    "id": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b",
     "alsoKnownAs": [
-      "urn:oid:testnet:0x894d83222e3241631bb3dfeb1f6d77987b16b911ab88da5ff843c9262c0c802b"
+      "urn:oid:testnet:0xeda12be0ee0290a2c3f49549c1763cc092c72c66ca881ce52611a018fc072999"
     ],
     "verificationMethod": [
       {
-        "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3#0gtWnoBQmpkBTqFYg0IYw9-QayM",
-        "controller": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
+        "id": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b#SL7Dob-VlRItmtGHAe34pgo6gE0",
+        "controller": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b",
         "type": "JsonWebKey2020",
         "publicKeyJwk": {
           "kty": "OKP",
           "alg": "EdDSA",
           "crv": "Ed25519",
-          "x": "Y7Y-Lg86dRG3zfrtMgiGN1oAjzjJHyPOG8aA7J3Htew"
+          "x": "j1GCM04Bi6DQsId1p3EfMM_7_qXCRnZ7YzKEjwrXyxY"
         }
       }
     ],
     "service": [
       {
-        "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3#ObjectIDURL",
-        "type": "LinkedDomains",
+        "id": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b#ObjectIDURL",
+        "type": "ObjectIDURL",
         "serviceEndpoint": [
-          "https://dapp.objectid.io/oid=0x894d83222e3241631bb3dfeb1f6d77987b16b911ab88da5ff843c9262c0c802b&n=testnet"
+          "https://dapp.objectid.io/oid=0xeda12be0ee0290a2c3f49549c1763cc092c72c66ca881ce52611a018fc072999&n=testnet"
         ]
       }
     ]
   },
-  "verificationMethodId": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3#0gtWnoBQmpkBTqFYg0IYw9-QayM",
-  "methodFragment": "#0gtWnoBQmpkBTqFYg0IYw9-QayM",
-  "vcJwt": "eyJraWQiOiJkaWQ6aW90YTp0ZXN0bmV0OjB4Mzk2Mjc4ZmMxNDlhZDBlNTkzYjc4NDkxOTgzNWJmMWEzYzBjNTA3NGE5YWEzMzUzNTQyOTI2YTQ0MzgzN2FlMyMwZ3RXbm9CUW1wa0JUcUZZZzBJWXc5LVFheU0iLCJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSJ9.eyJpc3MiOiJkaWQ6aW90YTp0ZXN0bmV0OjB4Mzk2Mjc4ZmMxNDlhZDBlNTkzYjc4NDkxOTgzNWJmMWEzYzBjNTA3NGE5YWEzMzUzNTQyOTI2YTQ0MzgzN2FlMyIsIm5iZiI6MTc2ODkwMTI5NSwianRpIjoidXJuOnV1aWQ6ZTM5YzgxYzgtZmMxZS00OTQ0LTk0Y2EtNDUxYzZlYTMwMTM3Iiwic3ViIjoiZGlkOmlvdGE6dGVzdG5ldDoweDM5NjI3OGZjMTQ5YWQwZTU5M2I3ODQ5MTk4MzViZjFhM2MwYzUwNzRhOWFhMzM1MzU0MjkyNmE0NDM4MzdhZTMiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSJdLCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiRmlsZUhhc2hDcmVkZW50aWFsIl0sImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImZpbGUiOnsibmFtZSI6InRlc3QudHh0Iiwic2l6ZSI6OSwic2hhMjU2IjoiOWEzMGE1MDNiMjg2MmM1MWMzYzVhY2Q3ZmJjZTJmMWY3ODRjZjQ2NThjY2Y4ZTg3ZDUwMjNhOTBjMjFjMDcxNCJ9fX19.SF90AEwnMedDk4Xq0d6uRNAgF41jvzZwiNF6dQ9Axu2hKYn4FFA1vmk5Z3NffKub7AnBLigfepRTw7qzAQ_SDw",
+  "verificationMethodId": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b#SL7Dob-VlRItmtGHAe34pgo6gE0",
+  "methodFragment": "#SL7Dob-VlRItmtGHAe34pgo6gE0",
+  "vcJwt": "eyJraWQiOiJkaWQ6aW90YTp0ZXN0bmV0OjB4MDJmNmIxMDNkNjQ0ODA3YTU5ZDY0YTA1YTY1NzQ3NGQzMmVkNTRmNmM5M2RmYjhlYjgyMzU1YTEyYjBmN2Y5YiNTTDdEb2ItVmxSSXRtdEdIQWUzNHBnbzZnRTAiLCJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSJ9.eyJpc3MiOiJkaWQ6aW90YTp0ZXN0bmV0OjB4MDJmNmIxMDNkNjQ0ODA3YTU5ZDY0YTA1YTY1NzQ3NGQzMmVkNTRmNmM5M2RmYjhlYjgyMzU1YTEyYjBmN2Y5YiIsIm5iZiI6MTc2OTE2Njc2MiwianRpIjoidXJuOnV1aWQ6NjliNWIyNmItYzIyYy00NjU4LTkwZWEtYzhkMGZhMGRhZjY3Iiwic3ViIjoiZGlkOmlvdGE6dGVzdG5ldDoweDAyZjZiMTAzZDY0NDgwN2E1OWQ2NGEwNWE2NTc0NzRkMzJlZDU0ZjZjOTNkZmI4ZWI4MjM1NWExMmIwZjdmOWIiLCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSJdLCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiRmlsZUhhc2hDcmVkZW50aWFsIl0sImNyZWRlbnRpYWxTdWJqZWN0Ijp7ImZpbGUiOnsibmFtZSI6InRlc3QudHh0Iiwic2l6ZSI6OSwic2hhMjU2IjoiOWEzMGE1MDNiMjg2MmM1MWMzYzVhY2Q3ZmJjZTJmMWY3ODRjZjQ2NThjY2Y4ZTg3ZDUwMjNhOTBjMjFjMDcxNCJ9fX19.JhB3uKnXmFiRhCdthVc9HyyppOsWsIpZOIOzRSXXln8hmDgPx7kPCj94oYc_1ao1w1e7tY04Q30gjUJQflNzBg",
   "vc": {
     "@context": [
       "https://www.w3.org/2018/credentials/v1"
     ],
-    "id": "urn:uuid:e39c81c8-fc1e-4944-94ca-451c6ea30137",
+    "id": "urn:uuid:69b5b26b-c22c-4658-90ea-c8d0fa0daf67",
     "type": [
       "VerifiableCredential",
       "FileHashCredential"
     ],
     "credentialSubject": {
-      "id": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
+      "id": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b",
       "file": {
         "name": "test.txt",
         "size": 9,
         "sha256": "9a30a503b2862c51c3c5acd7fbce2f1f784cf4658ccf8e87d5023a90c21c0714"
       }
     },
-    "issuer": "did:iota:testnet:0x396278fc149ad0e593b784919835bf1a3c0c5074a9aa3353542926a443837ae3",
-    "issuanceDate": "2026-01-20T09:28:15Z"
+    "issuer": "did:iota:testnet:0x02f6b103d644807a59d64a05a657474d32ed54f6c93dfb8eb82355a12b0f7f9b",
+    "issuanceDate": "2026-01-23T11:12:42Z"
   }
 }
